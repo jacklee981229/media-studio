@@ -41,7 +41,7 @@ These are correctness issues, not style.
 ## Testing
 
 - Tests point `config.TRIPS`, `config.CACHE` and `config.MUSIC` at temporary folders before touching any of them: one test once made Jack's real music folder.
-- Unit tests with Python's `unittest`. Test photos and clips are generated inside the tests (pillow-heif writes HEIC, ffmpeg makes HLG clips); never commit Jack's photos, since the repo may become public.
+- Unit tests with Python's `unittest`. Test photos and clips are generated inside the tests (pillow-heif writes HEIC, ffmpeg makes HLG clips); never commit Jack's photos, since the repo is public. The one exception, by Jack's choice: the README's screenshot (`.github/readme/studio.webp`), picked landscapes only, no faces.
 - Checks on real files read Jack's trip folder and write only to the scratchpad: my copy's trips folder is in the scratchpad, each trip's `originals` a junction (`mklink /J`) to the real one, so test picks never land in Jack's `studio.json`. Remove such a junction with `cmd /c rmdir "<junction>"` before deleting anything around it: a recursive delete in Windows PowerShell 5.1 can follow it and wipe the real originals.
 - Jack's copy runs on port 4710. Mine run on 4712; never stop or restart his.
 - No UI tests. I check the UI myself with screenshots in Chrome at Jack's screen size (about 1985×1047) and at 1366×768.
