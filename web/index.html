@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Studio</title>
+<!-- The ground colour is set before anything paints, so the window never flashes white. -->
+<style>html { background: #0d0e10; color-scheme: dark; }</style>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <aside class="side" id="side"></aside>
+  <main class="main" id="main"></main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <dialog class="loupe" id="loupe" aria-label="大图" tabindex="-1">
+    <div class="stage" id="stage"></div>
+    <div class="meta" id="meta"></div>
+    <div class="verdict none" id="verdict" aria-hidden="true"></div>
+    <div class="verdict plain-tag" id="plain-tag" hidden>原图</div>
+    <div class="corner">
+      <button type="button" class="glass round" id="info-toggle" aria-label="详细信息（I）" aria-pressed="false">i</button>
+      <button type="button" class="glass" id="close">关闭</button>
+    </div>
+    <aside class="details glass" id="details" hidden></aside>
+    <button type="button" class="glass step prev" id="prev" aria-label="上一张">‹</button>
+    <button type="button" class="glass step next" id="next" aria-label="下一张">›</button>
+    <div class="dock" id="dock">
+      <div class="strip glass" id="strip" hidden></div>
+      <div class="bar glass" id="bar"></div>
+    </div>
+  </dialog>
+
+  <dialog class="peek" id="peek" aria-label="风格对比" tabindex="-1">
+    <img id="peek-img" alt="">
+    <div class="corner"><button type="button" class="glass" id="peek-close">关闭</button></div>
+    <div class="dock"><div class="bar glass"><b id="peek-name"></b><span class="dim" id="peek-file"></span><button type="button" class="pill-btn keep" id="peek-use">用这个风格</button></div>
+      <p class="keys">← → 换风格 · ↑ ↓ 换照片 · Enter 用这个风格 · Esc 关闭</p></div>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
