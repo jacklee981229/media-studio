@@ -6,12 +6,17 @@ whose size or date changed. Nothing here ever writes inside originals.
 import hashlib
 import threading
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
-from . import config, export, looks, meta, pictures, similar, source, store, subject, timeline
+from . import config, export, looks, meta, pictures, publish, similar, source, store, subject, timeline
 
 # Index format; bump it when what's stored per file changes, so old caches are rebuilt.
 VERSION = 3
+# Words under one photo in the story: a few paragraphs at most.
+STORY_WORDS = 4000
+STORY_PLACE = 40
+STORY_TITLE = 120
 
 
 def trips() -> list:
@@ -27,6 +32,21 @@ def music() -> list:
     config.MUSIC.mkdir(parents=True, exist_ok=True)
     return sorted((p.name for p in config.MUSIC.iterdir() if p.is_file() and p.suffix.lower() in config.MUSIC_TYPES),
                   key=str.lower)
+
+
+# Full songs, one of which a whole story can play under it: the music folder's 完整版 (the 8 s pieces beside it are
+# for single clips). A songs.json there gives each one's credit: title, artist and the address it came from.
+FULL = '完整版'
+
+
+def full_music() -> list:
+    """The full songs, by name, each with its credit."""
+    folder = config.MUSIC / FULL
+    if not folder.is_dir():
+        return []
+    credits = store.read_json(folder / 'songs.json', {}) or {}
+    return [{'name': p.name, **credits.get(p.name, {})} for p in sorted(folder.iterdir(), key=lambda p: p.name.lower())
+            if p.is_file() and p.suffix.lower() in config.MUSIC_TYPES]
 
 
 def media_files(originals: Path) -> list:
@@ -74,6 +94,7 @@ class Trip:
         self.entries = {}  # id -> stored facts about one file
         self.progress = {'done': 0, 'total': 0, 'running': False}
         self.export_progress = {'done': 0, 'total': 0, 'running': False, 'failed': 0}
+        self.publish_progress = {'done': 0, 'total': 0, 'running': False, 'failed': 0, 'address': None, 'error': None}
 
     # ---- the index
 
@@ -231,6 +252,96 @@ class Trip:
             clip.update({k: changes[k] for k in ('start', 'sound', 'music', 'music_start') if k in changes})
         self._update(change)
 
+    def set_story(self, item_id: str, chosen=None, words=None, joined=None, place=None, note=None) -> None:
+        """Put a kept photo into the trip's story or take it out, set the words written under it and the place it was
+        taken, and/or join it to the one before it in the story: joined photos share that one's words and place and show
+        one after another. A note is words on their own after it (after its group), shown on the site without a photo.
+        Words stay when a photo is taken out, so putting it back brings them back."""
+        self._check_ids([item_id])
+        if self.entries[item_id]['kind'] == 'video' and self.clip_of(item_id)['length'] <= 0:
+            raise ValueError('this video has no clip to show')
+        if chosen is not None and not isinstance(chosen, bool):
+            raise ValueError('chosen is true or false')
+        if words is not None and (not isinstance(words, str) or len(words) > STORY_WORDS):
+            raise ValueError(f'words are text, at most {STORY_WORDS} characters')
+        if joined is not None and not isinstance(joined, bool):
+            raise ValueError('joined is true or false')
+        if place is not None and (not isinstance(place, str) or len(place) > STORY_PLACE):
+            raise ValueError(f'the place is text, at most {STORY_PLACE} characters')
+        if note is not None and (not isinstance(note, str) or len(note) > STORY_WORDS):
+            raise ValueError(f'the note is text, at most {STORY_WORDS} characters')
+
+        def change(data):
+            story = data.setdefault('story', {})
+            ids = story.setdefault('ids', [])
+            if chosen and item_id not in ids:
+                ids.append(item_id)
+            elif chosen is False and item_id in ids:
+                ids.remove(item_id)
+            if words is not None:
+                texts = story.setdefault('words', {})
+                if words.strip():
+                    texts[item_id] = words
+                else:
+                    texts.pop(item_id, None)
+            if joined is not None:
+                together = story.setdefault('joined', [])
+                if joined and item_id not in together:
+                    together.append(item_id)
+                elif not joined and item_id in together:
+                    together.remove(item_id)
+            if place is not None:
+                places = story.setdefault('places', {})
+                if place.strip():
+                    places[item_id] = place.strip()
+                else:
+                    places.pop(item_id, None)
+            if note is not None:
+                # Kept even when empty: an empty box Jack added stays open until he removes it (note=None never
+                # reaches here; removing sends remove_note).
+                story.setdefault('notes', {})[item_id] = note
+        self._update(change)
+
+    def remove_story_note(self, item_id: str) -> None:
+        """Take away the box of words after a photo."""
+        self._check_ids([item_id])
+        self._update(lambda data: data.setdefault('story', {}).setdefault('notes', {}).pop(item_id, None))
+
+    def set_story_title(self, title) -> None:
+        """The post's title on Jack's Space, written into its index.md when the story is published."""
+        if not isinstance(title, str) or not title.strip() or len(title) > STORY_TITLE:
+            raise ValueError(f'the title is text, 1 to {STORY_TITLE} characters')
+        self._update(lambda data: data.setdefault('story', {}).__setitem__('title', title.strip()))
+
+    def story_title(self, choices=None) -> str:
+        """Jack's title for the post, else the one its index.md has now, else one from the trip's name."""
+        choices = choices if choices is not None else self._choices()
+        post = config.SITE / 'src' / 'content' / 'posts' / publish.address(self.name)
+        return choices.get('story', {}).get('title') or publish.read_title(post) or publish.title(self.name)
+
+    def set_story_text(self, which: str, words) -> None:
+        """The story's opening ('intro') or closing ('outro') words, written apart from any photo; empty is fine."""
+        if which not in ('intro', 'outro'):
+            raise ValueError('intro or outro')
+        if not isinstance(words, str) or len(words) > STORY_WORDS:
+            raise ValueError(f'words are text, at most {STORY_WORDS} characters')
+        self._update(lambda data: data.setdefault('story', {}).__setitem__(which, words))
+
+    def set_story_back(self, which: str, item_id) -> None:
+        """The photo behind the story's opening ('intro') or closing ('outro') words, or None for the default: the
+        story's first photo for the opening, its last for the closing."""
+        if which not in ('intro', 'outro'):
+            raise ValueError('intro or outro')
+        if item_id is not None:
+            self._check_ids([item_id])
+        self._update(lambda data: data.setdefault('story', {}).__setitem__(f'{which}_photo', item_id))
+
+    def set_story_song(self, name) -> None:
+        """The full song the whole story plays under it, or None for a silent story."""
+        if name is not None and name not in [s['name'] for s in full_music()]:
+            raise ValueError('no such song in the full songs folder')
+        self._update(lambda data: data.setdefault('story', {}).__setitem__('song', name))
+
     def subject_of(self, item_id: str):
         """Portrait or landscape for one file: Jack's own call if he made one, else the guess."""
         choices = self._choices()
@@ -308,6 +419,17 @@ class Trip:
         (folder / name).write_text(looks.cube(look_id, strength), encoding='ascii')
         return folder, name
 
+    def _clip_job(self, pool: ProcessPoolExecutor, item: dict, folder: Path, name: str, cube_dir: Path, cube_name,
+                  silent=False):
+        """Make one kept video's clip, with its chosen sound (or none), in a worker process; returns the future."""
+        clip = {**item['clip'], 'sound': 'mute'} if silent else item['clip']
+        song = config.MUSIC / clip['music'] if clip['sound'] == 'music' and clip['music'] else None
+        # A song taken out of the music folder since it was chosen: the clip goes out silent, not broken.
+        song = str(song) if song and song.is_file() else None
+        sound = clip['sound'] if clip['sound'] != 'music' or song else 'mute'
+        return pool.submit(export.export_video, str(config.FFMPEG), str(self.path_of(item['id'])), str(folder), name,
+                           clip['start'], clip['length'], item['hdr'], str(cube_dir), cube_name, sound, song, clip['music_start'])
+
     def export(self, pool: ProcessPoolExecutor) -> None:
         """Write every kept photo and video clip to the export folder and list them in media.json, in timeline
         order. As JPEG, the photos go to their own folder and media.json keeps the website's photos as they were."""
@@ -328,14 +450,7 @@ class Trip:
                                                facts.get('taken'), facts.get('offset'))))
             cube_dir, cube_name = self.cube_file()
             for item in videos_kept:
-                clip = item['clip']
-                song = config.MUSIC / clip['music'] if clip['sound'] == 'music' and clip['music'] else None
-                # A song taken out of the music folder since it was chosen: the clip goes out silent, not broken.
-                song = str(song) if song and song.is_file() else None
-                sound = clip['sound'] if clip['sound'] != 'music' or song else 'mute'
-                jobs.append((item, pool.submit(export.export_video, str(config.FFMPEG), str(self.path_of(item['id'])),
-                                               str(videos), named[item['id']], clip['start'], clip['length'], item['hdr'],
-                                               str(cube_dir), cube_name, sound, song, clip['music_start'])))
+                jobs.append((item, self._clip_job(pool, item, videos, named[item['id']], cube_dir, cube_name)))
             listed = {'photo': [], 'video': []}
             before = store.read_json(self.export_folder() / 'media.json', {}) or {}
             last = {e['id']: e for key in ('photos', 'videos') for e in before.get(key, [])}
@@ -369,6 +484,71 @@ class Trip:
         finally:
             self.export_progress['running'] = False
 
+    # ---- publishing the story to Jack's Space
+
+    def publish(self, pool: ProcessPoolExecutor) -> None:
+        """Put the story's photos into the media repo and its post into Jack's Space (publish.py). Nothing is
+        written to the site unless every photo made it, so the site never lists a photo the media repo lacks."""
+        items = [i for i in self.view()['items'] if i['story'] and i['pick'] == 'yes' and not i['error'] and (i['kind'] == 'photo' or i['clip'])]
+        self.publish_progress = {'done': 0, 'total': len(items), 'running': True, 'failed': 0, 'address': None, 'error': None}
+        try:
+            folder = publish.address(self.name)
+            posts = config.SITE / 'src' / 'content' / 'posts'
+            if not items:
+                raise ValueError('故事里还没有照片')
+            if not posts.is_dir() or not config.MEDIA.is_dir():
+                raise ValueError(f"找不到 Jack's Space（{config.SITE}）或照片仓库（{config.MEDIA}）")
+            media = config.MEDIA / folder
+            cube_dir, cube_name = self.cube_file()
+            jobs = []
+            for item in items:
+                facts = self.entries[item['id']]['meta']
+                if item['kind'] == 'video':
+                    # In a story every clip is silent, like a moving photo: the story has one song of its own.
+                    jobs.append((item, self._clip_job(pool, item, media / export.VIDEOS, item['id'], cube_dir, cube_name,
+                                                      silent=True)))
+                    continue
+                jobs.append((item, pool.submit(export.export_photo, str(self.path_of(item['id'])), str(media), item['id'],
+                                               self.develop_settings(item['id']), facts.get('taken'), facts.get('offset'))))
+            moments, why = [], None
+            for item, future in jobs:
+                try:
+                    written = future.result()
+                    # A photo joined to the one before shares its words; the first in the story can't join anything.
+                    joined = item['joined'] and bool(moments)
+                    moment = {'id': item['id'], 'kind': item['kind'], 'width': written['width'], 'height': written['height'],
+                              'taken': item['when'], 'words': '' if joined else item['words']}
+                    if joined:
+                        moment['joined'] = True
+                    elif item['place']:
+                        moment['place'] = item['place']
+                    if item['note'] is not None and item['note'].strip():
+                        moment['after'] = item['note']
+                    if item['kind'] == 'video':
+                        moment.update(seconds=written['seconds'])
+                    moments.append(moment)
+                except Exception as error:
+                    self.publish_progress['failed'] += 1
+                    why = why or f"{item['file']}：{error}"
+                self.publish_progress['done'] += 1
+            if self.publish_progress['failed']:
+                raise ValueError(f"{self.publish_progress['failed']} 张照片没做出来（{why}），网站没有改")
+            song = next((s for s in full_music() if s['name'] == self._choices().get('story', {}).get('song')), None)
+            music = publish.song(config.MUSIC / FULL / song['name'], media, song) if song else None
+            for old in publish.stale(media, moments, music):
+                old.unlink()
+            told = self._choices().get('story', {})
+            # A background photo left out of the story since it was picked falls back to the default.
+            shown = {m['id'] for m in moments}
+            backs = {k: told.get(f'{k}_photo') if told.get(f'{k}_photo') in shown else None for k in ('intro', 'outro')}
+            publish.write_post(posts / folder, self.story_title(), folder, moments, publish.cover(media, moments), datetime.now(),
+                               music, told.get('intro', ''), told.get('outro', ''), backs['intro'], backs['outro'])
+            self.publish_progress['address'] = folder
+        except Exception as error:
+            self.publish_progress['error'] = str(error)
+        finally:
+            self.publish_progress['running'] = False
+
     # ---- what the screen shows
 
     def view(self) -> dict:
@@ -381,6 +561,12 @@ class Trip:
         marks = choices.get('marks', {})
         chosen = choices.get('subjects', {})
         adjust = choices.get('adjust', {})
+        story = choices.get('story', {})
+        in_story = set(story.get('ids', []))
+        words = story.get('words', {})
+        joined = set(story.get('joined', []))
+        places = story.get('places', {})
+        notes = story.get('notes', {})
         items = []
         for item_id, entry in entries.items():
             facts = entry['meta']
@@ -414,6 +600,11 @@ class Trip:
                 'pick': marks.get(item_id, {}).get('pick'),
                 'adjust': adjust.get(item_id, {'exposure': 0, 'warmth': 0}),
                 'clip': self.clip_of(item_id, choices) if entry['kind'] == 'video' and 'error' not in facts else None,
+                'story': item_id in in_story,
+                'words': words.get(item_id, ''),
+                'joined': item_id in joined,
+                'place': places.get(item_id, ''),
+                'note': notes.get(item_id),
             })
         items.sort(key=lambda i: (i['time'] is None, i['time'] or 0, i['file'].lower()))
         stacks = similar.groups(items)
@@ -430,6 +621,13 @@ class Trip:
             'stacks': len(stacks),
             'days': [{'day': d, 'label': timeline.day_label(d)} for d in days],
             'progress': dict(self.progress),
+            'publish': dict(self.publish_progress),
+            'story_song': choices.get('story', {}).get('song'),
+            'story_intro': choices.get('story', {}).get('intro', ''),
+            'story_outro': choices.get('story', {}).get('outro', ''),
+            'story_intro_photo': choices.get('story', {}).get('intro_photo'),
+            'story_title': self.story_title(choices),
+            'story_outro_photo': choices.get('story', {}).get('outro_photo'),
             'export': {**self.export_progress, 'folder': str(self.export_folder()), 'format': self.export_format(),
                        'ready': (self.export_folder() / 'media.json').exists()},
         }

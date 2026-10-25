@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -40,8 +41,9 @@ class WholeTrip(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.root = Path(tempfile.mkdtemp())
-        cls.saved = config.TRIPS, config.CACHE, config.MUSIC
+        cls.saved = config.TRIPS, config.CACHE, config.MUSIC, config.SITE, config.MEDIA
         config.TRIPS, config.CACHE, config.MUSIC = cls.root / 'Trips', cls.root / 'cache', cls.root / 'music'
+        config.SITE, config.MEDIA = cls.root / 'site', cls.root / 'media'
         o = config.TRIPS / '2026-10 Test' / 'originals'
         save_photo(o / 'IMG_0001.HEIC', picture(1), 'HEIF', taken='2026:10:14 10:00:00', gps=(25.0, 102.0), **PHONE)
         save_photo(o / 'IMG_0002.HEIC', picture(1).rotate(1), 'HEIF', taken='2026:10:14 10:00:05', **PHONE)
@@ -60,7 +62,7 @@ class WholeTrip(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        config.TRIPS, config.CACHE, config.MUSIC = cls.saved
+        config.TRIPS, config.CACHE, config.MUSIC, config.SITE, config.MEDIA = cls.saved
 
     def test_originals_are_untouched(self):
         self.assertEqual(fingerprint_folder(self.trip.originals), self.before)
@@ -138,6 +140,153 @@ class WholeTrip(unittest.TestCase):
                 self.trip.set_export_format('png')
             self.trip.set_export_format('webp')
         self.assertEqual(self.trip.export_progress['failed'], 0)
+        self.assertEqual(fingerprint_folder(self.trip.originals), self.before)
+
+    def test_story(self):
+        self.trip.set_story('img_0003', chosen=True)
+        self.trip.set_story('img_0001', chosen=True, words='第一天的早上。')
+        self.trip.set_story('img_0001', chosen=True)
+        view = {i['id']: i for i in self.trip.view()['items']}
+        self.assertEqual((view['img_0001']['story'], view['img_0001']['words']), (True, '第一天的早上。'))
+        self.assertEqual((view['img_0003']['story'], view['img_0003']['words']), (True, ''))
+        self.assertFalse(view['img_0002']['story'])
+        # Taken out, a photo keeps its words for when it comes back; empty words are dropped.
+        self.trip.set_story('img_0001', chosen=False)
+        self.assertEqual(self.trip.view()['items'][0]['words'], '第一天的早上。')
+        self.trip.set_story('img_0003', words='   ')
+        self.assertNotIn('img_0003', trip.Trip('2026-10 Test')._choices()['story']['words'])
+        for bad in (('nope', {'chosen': True}), ('img_0003', {'chosen': 'yes'}),
+                    ('img_0003', {'words': 5}), ('img_0003', {'words': 'x' * 5000})):
+            with self.assertRaises(ValueError):
+                self.trip.set_story(bad[0], **bad[1])
+        self.trip.set_story('img_0003', chosen=False)
+
+    def test_publish(self):
+        posts = config.SITE / 'src' / 'content' / 'posts'
+        with ProcessPoolExecutor(max_workers=2) as pool:
+            # Without the site and the media repo there, nothing is written.
+            self.trip.mark(['img_0001', 'img_0004', 'img_0005'], 'yes')
+            self.trip.set_story('img_0004', chosen=True, words='石林。')
+            self.trip.set_story('img_0001', chosen=True)
+            self.trip.set_story('img_0005', chosen=True, words='一段视频。')
+            self.trip.publish(pool)
+            self.assertIn('找不到', self.trip.publish_progress['error'])
+            posts.mkdir(parents=True)
+            config.MEDIA.mkdir()
+            self.trip.publish(pool)
+            self.assertEqual((self.trip.publish_progress['error'], self.trip.publish_progress['address']), (None, 'test-2026'))
+            post = posts / 'test-2026'
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual(told['folder'], 'test-2026')
+            # Photos and the clip in timeline order; the clip with its length and sound.
+            self.assertEqual([(m['id'], m['kind'], m['words']) for m in told['moments']],
+                             [('img_0001', 'photo', ''), ('img_0004', 'photo', '石林。'), ('img_0005', 'video', '一段视频。')])
+            # In a story the clip is silent whatever sound it has for exports; the story has no song yet.
+            clip = told['moments'][2]
+            self.assertEqual(('sound' in clip, clip['seconds'] > 0, 'seconds' in told['moments'][0], 'music' in told), (False, True, False, False))
+            # Joined to the photo before it, a photo shares that one's words: its own are kept but not published.
+            self.trip.set_story('img_0004', joined=True)
+            self.trip.set_story('img_0001', joined=True)
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual([(m['id'], m.get('joined', False), m['words']) for m in told['moments']],
+                             [('img_0001', False, ''), ('img_0004', True, ''), ('img_0005', False, '一段视频。')])
+            self.assertEqual({i['id']: i['words'] for i in self.trip.view()['items']}['img_0004'], '石林。')
+            with self.assertRaises(ValueError):
+                self.trip.set_story('img_0004', joined='yes')
+            self.trip.set_story('img_0004', joined=False)
+            self.trip.set_story('img_0001', joined=False)
+            # A place over the words, trimmed; empty removes it.
+            self.trip.set_story('img_0004', place='  石林  ')
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual([m.get('place') for m in told['moments']], [None, '石林', None])
+            self.assertEqual({i['id']: i['place'] for i in self.trip.view()['items']}['img_0004'], '石林')
+            for bad in (5, 'x' * 41):
+                with self.assertRaises(ValueError):
+                    self.trip.set_story('img_0004', place=bad)
+            self.trip.set_story('img_0004', place='')
+            # Words on their own after a photo: published only once written; removing the box drops them.
+            self.trip.set_story('img_0001', note='')
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertNotIn('after', told['moments'][0])
+            self.assertEqual({i['id']: i['note'] for i in self.trip.view()['items']}['img_0001'], '')
+            self.trip.set_story('img_0001', note='路上。')
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual([m.get('after') for m in told['moments']], ['路上。', None, None])
+            self.trip.remove_story_note('img_0001')
+            self.assertIsNone({i['id']: i['note'] for i in self.trip.view()['items']}['img_0001'])
+            with self.assertRaises(ValueError):
+                self.trip.set_story('img_0001', note=5)
+            # The title: from the post's index.md until Jack writes one; publishing changes only that line.
+            self.assertEqual(self.trip.view()['story_title'], 'Test')
+            (post / 'index.md').write_text((post / 'index.md').read_text(encoding='utf-8') + 'Jack\'s own words.\n', encoding='utf-8')
+            self.trip.set_story_title('  七天的云南  ')
+            self.trip.publish(pool)
+            page = (post / 'index.md').read_text(encoding='utf-8')
+            self.assertIn('title: "七天的云南"', page)
+            self.assertIn("Jack's own words.", page)
+            self.assertEqual(self.trip.view()['story_title'], '七天的云南')
+            for bad in ('', '   ', 5, 'x' * 121):
+                with self.assertRaises(ValueError):
+                    self.trip.set_story_title(bad)
+            # Opening and closing words, apart from any photo.
+            self.trip.set_story_text('intro', '出发。')
+            with self.assertRaises(ValueError):
+                self.trip.set_story_text('middle', 'x')
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual((told.get('intro'), 'outro' in told), ('出发。', False))
+            self.assertEqual(self.trip.view()['story_intro'], '出发。')
+            # The photo behind the opening: Jack's pick while it's in the story, else the site's default.
+            self.trip.set_story_back('intro', 'img_0004')
+            self.trip.publish(pool)
+            self.assertEqual(json.loads((post / 'story.json').read_text(encoding='utf-8')).get('introPhoto'), 'img_0004')
+            self.assertEqual(self.trip.view()['story_intro_photo'], 'img_0004')
+            self.trip.set_story('img_0004', chosen=False)
+            self.trip.publish(pool)
+            self.assertNotIn('introPhoto', json.loads((post / 'story.json').read_text(encoding='utf-8')))
+            self.trip.set_story('img_0004', chosen=True)
+            for bad in (('middle', 'img_0004'), ('intro', 'nope')):
+                with self.assertRaises(ValueError):
+                    self.trip.set_story_back(*bad)
+            self.trip.set_story_back('intro', None)
+            self.trip.set_story_text('intro', '')
+            # One song for the whole story, with its credit; taking it away removes it from the media repo too.
+            full = config.MUSIC / trip.FULL
+            full.mkdir(parents=True, exist_ok=True)
+            (full / 'Calm.mp3').write_bytes(b'not really a song')
+            (full / 'songs.json').write_text('{"Calm.mp3": {"title": "Calm", "artist": "someone", "url": "https://example.test/calm"}}', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                self.trip.set_story_song('nope.mp3')
+            self.trip.set_story_song('Calm.mp3')
+            self.trip.publish(pool)
+            told = json.loads((post / 'story.json').read_text(encoding='utf-8'))
+            self.assertEqual(told['music'], {'file': 'music/song.mp3', 'title': 'Calm', 'artist': 'someone', 'url': 'https://example.test/calm'})
+            self.assertEqual((config.MEDIA / 'test-2026' / 'music' / 'song.mp3').read_bytes(), b'not really a song')
+            self.trip.set_story_song(None)
+            self.trip.publish(pool)
+            self.assertNotIn('music', json.loads((post / 'story.json').read_text(encoding='utf-8')))
+            self.assertFalse((config.MEDIA / 'test-2026' / 'music' / 'song.mp3').exists())
+            self.assertEqual((told['moments'][0]['width'], told['moments'][0]['taken']), (400, '2026-10-14T10:00:00+08:00'))
+            files = sorted(str(p.relative_to(config.MEDIA)).replace('\\', '/') for p in config.MEDIA.rglob('*.webp'))
+            self.assertEqual(files, ['test-2026/img_0001.webp', 'test-2026/img_0004.webp', 'test-2026/smaller/img_0001_1280.webp',
+                                     'test-2026/smaller/img_0001_640.webp', 'test-2026/smaller/img_0004_1280.webp',
+                                     'test-2026/smaller/img_0004_640.webp', 'test-2026/videos/img_0005.webp'])
+            self.assertTrue((config.MEDIA / 'test-2026' / 'videos' / 'img_0005.mp4').exists())
+            self.assertIn('topic: travel', (post / 'index.md').read_text(encoding='utf-8'))
+            self.assertTrue((post / 'cover.webp').exists())
+            # Jack's own changes to index.md stay; a photo taken out of the story leaves the media repo.
+            (post / 'index.md').write_text('mine', encoding='utf-8')
+            self.trip.set_story('img_0001', chosen=False)
+            self.trip.set_story('img_0005', chosen=False)
+            self.trip.publish(pool)
+            self.assertEqual((post / 'index.md').read_text(encoding='utf-8'), 'mine')
+            self.assertFalse(any('img_0001' in p.name or 'img_0005' in p.name for p in config.MEDIA.rglob('*')))
+            self.assertEqual([m['id'] for m in json.loads((post / 'story.json').read_text(encoding='utf-8'))['moments']], ['img_0004'])
+            self.trip.set_story('img_0004', chosen=False)
         self.assertEqual(fingerprint_folder(self.trip.originals), self.before)
 
     def test_picks_are_kept(self):

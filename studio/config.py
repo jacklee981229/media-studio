@@ -9,6 +9,9 @@ PORT = int(os.environ.get('MEDIA_STUDIO_PORT') or 4710)
 # Songs Jack may use under his clips: music he has the right to publish, put here by him.
 MUSIC = Path(os.environ.get('MEDIA_STUDIO_MUSIC') or Path(os.environ['USERPROFILE']) / 'Music' / 'Media Studio')
 MUSIC_TYPES = {'.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'}
+# Publishing a trip's story: its photos go to the media repo (Jack's Space's /media/), its post to Jack's Space.
+SITE = Path(os.environ.get('MEDIA_STUDIO_SITE') or ROOT.parent / 'jacks-space')
+MEDIA = Path(os.environ.get('MEDIA_STUDIO_MEDIA') or ROOT.parent / 'media')
 FFMPEG = ROOT / 'tools' / 'ffmpeg' / 'ffmpeg.exe'
 FFPROBE = ROOT / 'tools' / 'ffmpeg' / 'ffprobe.exe'
 WEB = ROOT / 'web'

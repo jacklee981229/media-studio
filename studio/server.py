@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import config, looks, pictures
-from .trip import Trip, music, trips
+from .trip import FULL, Trip, full_music, music, trips
 
 def build_id() -> str:
     """A fingerprint of the running code. start.cmd compares it with the code on disk and replaces a copy left
@@ -103,10 +103,18 @@ class Studio:
             trip.export_progress = {**trip.export_progress, 'running': True}
         threading.Thread(target=trip.export, args=(self.workers(),), daemon=True).start()
 
+    def publish(self, trip: Trip) -> None:
+        """Publish the trip's story in the background, unless that or an export is already under way."""
+        with self.jobs:
+            if trip.publish_progress['running'] or trip.export_progress['running']:
+                return
+            trip.publish_progress = {**trip.publish_progress, 'running': True}
+        threading.Thread(target=trip.publish, args=(self.workers(),), daemon=True).start()
+
     def busy(self) -> bool:
         with self.lock:
             open_trips = list(self.trips.values())
-        return any(t.progress['running'] or t.export_progress['running'] for t in open_trips)
+        return any(t.progress['running'] or t.export_progress['running'] or t.publish_progress['running'] for t in open_trips)
 
 
 def allowed_hosts(port: int) -> set:
@@ -195,9 +203,14 @@ def make_handler(studio: Studio, port: int, stop=None):
                 return self.json({'looks': looks.summary()})
             if path == '/api/music':
                 return self.json({'songs': music(), 'folder': str(config.MUSIC)})
+            if path == '/api/full-music':
+                return self.json({'songs': full_music(), 'folder': str(config.MUSIC / FULL)})
             if path == '/music':
                 # A song by its name in the music folder's own listing, never a path from the request.
                 name = q.get('name')
+                if q.get('full'):
+                    known = name in [s['name'] for s in full_music()]
+                    return self.video(config.MUSIC / FULL / name, 'audio/mpeg') if known else self.fail(404, 'No such song.')
                 return self.video(config.MUSIC / name, 'audio/mpeg') if name in music() else self.fail(404, 'No such song.')
             trip = studio.trip(q.get('trip'))
             if trip is None:
@@ -332,12 +345,49 @@ def make_handler(studio: Studio, port: int, stop=None):
                 except ValueError as error:
                     return self.fail(400, str(error))
                 return self.json({'clip': trip.clip_of(body['id'])})
+            if path == '/api/story-text':
+                try:
+                    trip.set_story_text(body.get('which'), body.get('words'))
+                except ValueError as error:
+                    return self.fail(400, str(error))
+                return self.json({'ok': True})
+            if path == '/api/story-title':
+                try:
+                    trip.set_story_title(body.get('title'))
+                except ValueError as error:
+                    return self.fail(400, str(error))
+                return self.json({'ok': True})
+            if path == '/api/story-back':
+                try:
+                    trip.set_story_back(body.get('which'), body.get('id'))
+                except ValueError as error:
+                    return self.fail(400, str(error))
+                return self.json({'ok': True})
+            if path == '/api/story-song':
+                try:
+                    trip.set_story_song(body.get('song'))
+                except ValueError as error:
+                    return self.fail(400, str(error))
+                return self.json({'ok': True})
+            if path == '/api/story':
+                try:
+                    if body.get('remove_note'):
+                        trip.remove_story_note(body.get('id'))
+                    else:
+                        trip.set_story(body.get('id'), body.get('chosen'), body.get('words'), body.get('joined'), body.get('place'),
+                                       body.get('note'))
+                except ValueError as error:
+                    return self.fail(400, str(error))
+                return self.json({'ok': True})
             if path == '/api/export-format':
                 try:
                     trip.set_export_format(body.get('format'))
                 except ValueError as error:
                     return self.fail(400, str(error))
                 return self.json({'format': trip.export_format()})
+            if path == '/api/publish':
+                studio.publish(trip)
+                return self.json(trip.view())
             if path == '/api/export':
                 studio.export(trip)
                 return self.json(trip.view())

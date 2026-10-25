@@ -15,6 +15,9 @@
   --faint: #7d8188;
   --keep: #7be0b0;
   --keep-ink: #06301f;
+  --story: #f2a65a;
+  --story-hover: #f6b877;
+  --story-ink: #3a1f05;
   --drop: #ff7a6b;
   --received: #e6c48a;
   --shot: #b9bfff;
@@ -54,6 +57,10 @@ code { padding: 1px 6px; border-radius: 5px; background: var(--raised); font-siz
 .item:hover { background: var(--hover); color: var(--ink); }
 .item[aria-checked="true"], .item[aria-pressed="true"] { background: var(--on); color: var(--ink); }
 .item i { font-style: normal; font-size: 13px; color: var(--faint); }
+/* The way into the story stands out from the filters: filled, in its own warm colour. */
+.item.story-go { background: var(--story); color: var(--story-ink); font-weight: 600; }
+.item.story-go i { color: var(--story-ink); opacity: 0.75; }
+.item.story-go:hover { background: var(--story-hover); color: var(--story-ink); }
 .item[aria-checked="true"] i { color: var(--keep); }
 .switch { width: 30px; height: 18px; border-radius: 99px; background: var(--top); position: relative; flex: none; transition: background var(--t-2) var(--ease-in); }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--dim); transition: transform var(--t-3) var(--ease-in), background var(--t-2) var(--ease-in); }
@@ -198,6 +205,8 @@ button.glass:hover { background: rgba(44, 47, 53, 0.85); }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-checked="true"] { background: rgba(255, 255, 255, 0.13); color: var(--ink); }
 .bar select { border: 0; border-radius: 99px; padding: 7px 12px; background: rgba(255, 255, 255, 0.07); max-width: 220px; }
+/* The open list is drawn by Windows: it needs its own dark ground, or the light words vanish on white. */
+.bar select option { background: var(--raised); color: var(--ink); }
 .bar .note { color: var(--dim); font-size: 13px; padding: 0 6px; }
 .strip { display: flex; gap: 6px; padding: 6px; border-radius: 16px; }
 .strip button { width: 56px; height: 56px; padding: 0; border: 0; border-radius: 9px; overflow: hidden; background: var(--raised); opacity: 0.55; transition: opacity var(--t-2) var(--ease-in); }
@@ -219,6 +228,81 @@ button.glass:hover { background: rgba(44, 47, 53, 0.85); }
 .details dd { margin: 0; overflow-wrap: anywhere; }
 .details .keys { text-align: left; line-height: 1.9; }
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 10; display: grid; gap: 8px; max-width: 360px; }
+
+/* ---- the story: picking (a green frame and the photo's place in the story), then writing under each photo */
+.story-card.in::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 3px var(--keep); pointer-events: none; }
+.chip.order { top: 8px; left: 8px; min-width: 26px; text-align: center; font-weight: 700; background: var(--keep); color: var(--keep-ink); }
+.story-card:not(.in) .order { display: none; }
+.story-song { display: flex; align-items: center; gap: 8px; }
+.story-song .note { color: var(--dim); font-size: 13px; }
+.story-song .seek { width: 180px; accent-color: var(--keep); }
+.story-song .place { min-width: 7.5em; color: var(--dim); font-size: 13px; }
+.story-song select { border: 0; border-radius: 99px; padding: 7px 12px; background: var(--raised); max-width: 320px; }
+.story-song select option { background: var(--raised); color: var(--ink); }
+.publish { display: grid; gap: 8px; }
+.publish .pill-btn { justify-content: center; width: 100%; padding: 10px 14px; }
+.publish a.pill-btn { display: block; text-align: center; text-decoration: none; }
+.publish .note { color: var(--dim); font-size: 13px; }
+.publish .bad { color: var(--drop); }
+.story-write { display: grid; gap: 64px; max-width: 760px; margin: 8px auto 0; }
+.story-end .moment-head { margin-top: 0; }
+.moment img, .moment video { display: block; width: 100%; height: auto; max-height: 72vh; object-fit: contain; border-radius: 10px; background: var(--photo-ground); }
+.moment-wrap { display: grid; gap: 10px; }
+.join { justify-self: start; border: 0; border-radius: 99px; padding: 5px 12px; background: none; color: var(--dim); font-size: 13px; transition: color var(--t-2) var(--ease-in), background var(--t-2) var(--ease-in); }
+.join:hover { color: var(--ink); background: var(--hover); }
+/* A group's photos side by side, two to a row; each later one can leave the group. */
+.moment-photos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.moment-photos .member { position: relative; }
+.moment-photos img, .moment-photos video { aspect-ratio: 4 / 3; object-fit: cover; max-height: none; }
+.moment-photos .apart { position: absolute; top: 8px; right: 8px; padding: 4px 12px; font-size: 13px; background: var(--glass); backdrop-filter: blur(12px); }
+.moment-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 14px 4px 8px; color: var(--dim); font-size: 13px; }
+.moment-head .saved { display: inline-flex; align-items: center; gap: 8px; }
+.moment textarea, .story-end textarea { display: block; width: 100%; min-height: 5.6em; field-sizing: content; resize: none; border: 0; border-radius: 12px; padding: 14px 16px; background: var(--raised); color: var(--ink); font: 17px/1.75 var(--text); transition: background var(--t-2) var(--ease-in); }
+.moment textarea:focus, .story-end textarea:focus { background: var(--top); }
+.moment textarea::placeholder, .story-end textarea::placeholder { color: var(--faint); }
+.title-box { display: block; width: 100%; border: 0; border-radius: 12px; padding: 12px 16px; background: var(--raised); color: var(--ink); font: 600 24px var(--display); transition: background var(--t-2) var(--ease-in); }
+.title-box:focus { background: var(--top); outline: none; }
+.note-slot { display: grid; justify-items: start; margin: -32px 0; }
+.note-slot .story-end { width: 100%; }
+.note-slot .saved { display: inline-flex; align-items: center; gap: 12px; }
+
+/* ---- the story's preview, roughly as Jack's Space shows it */
+.story-show { width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: #0e1217; color: #e8edf3; overflow: hidden; }
+.story-show::backdrop { background: #000; }
+.story-show:focus-visible { outline: none; }
+.show-screen { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.show-glow, .show-back { grid-area: 1 / 1 / -1 / -1; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 900ms var(--ease-in); }
+.show-glow { transform: scale(1.15); filter: blur(48px) brightness(0.42) saturate(1.3); }
+.show-back { filter: brightness(0.32) saturate(0.7); }
+.show-photo { grid-area: 1 / 1; z-index: 1; width: 100%; height: 100%; padding: 32px 24px; object-fit: contain; opacity: 0; transform: scale(1.035); transition: opacity 700ms var(--ease-in), transform 1400ms var(--ease-in); }
+.show-glow.on, .show-back.on, .show-photo.on { opacity: 1; }
+.show-photo.on { transform: none; }
+.show-words { grid-area: 1 / 2; z-index: 2; align-self: center; max-width: 34em; margin-right: 64px; padding-left: 24px; font: 18px/1.75 var(--text); opacity: 0; translate: 0 12px; transition: opacity 400ms var(--ease-in), translate 700ms var(--ease-in); pointer-events: none; }
+.show-words.on { opacity: 1; translate: none; transition-delay: 150ms; }
+.show-words p { margin: 8px 0 0; }
+.show-words.end { grid-column: 1 / -1; justify-self: center; max-width: 42em; padding: 0 48px; font-size: 22px; line-height: 1.8; }
+.show-head { display: flex; gap: 10px; color: #9aa8b8; font-size: 14px; font-weight: 700; }
+.show-head b { display: inline-flex; align-items: center; gap: 6px; color: #e8edf3; }
+.show-head .pin { background: currentColor; }
+.show-count { position: absolute; left: 24px; bottom: 16px; z-index: 3; color: #9aa8b8; font-size: 13px; font-weight: 600; }
+.show-keys { position: absolute; right: 24px; bottom: 16px; z-index: 3; margin: 0; color: #9aa8b8; font-size: 13px; }
+.story-show .corner { position: absolute; top: 16px; right: 16px; z-index: 3; }
+/* The place over the words: a slim field with a pin, set apart from the words box below it. */
+.place-box { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 0 14px; border-radius: 99px; background: var(--raised); transition: background var(--t-2) var(--ease-in); }
+.place-box:focus-within { background: var(--top); }
+.pin { flex: none; width: 11px; height: 14px; background: var(--dim); clip-path: path("M5.5 14C5.5 14 0 8.8 0 5.5a5.5 5.5 0 0 1 11 0C11 8.8 5.5 14 5.5 14ZM5.5 7.6a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z"); }
+.place-box input { flex: 1; min-width: 0; border: 0; padding: 9px 0; background: none; color: var(--ink); font: 14px var(--text); outline: none; }
+.place-box input::placeholder { color: var(--faint); }
+/* The photo behind the opening or closing words: one row of the story's photos to pick from. */
+.backs-row { display: grid; gap: 8px; margin-top: 12px; }
+.backs-row .note { color: var(--dim); font-size: 13px; margin: 0 4px; }
+.backs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; scrollbar-color: var(--top) transparent; }
+.backs button { position: relative; flex: none; width: 96px; height: 72px; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--photo-ground); opacity: 0.55; transition: opacity var(--t-2) var(--ease-in); }
+.backs button:hover { opacity: 0.85; }
+.backs button[aria-checked='true'] { opacity: 1; }
+.backs button[aria-checked='true']::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 3px var(--keep); }
+.backs img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.backs .chip { position: absolute; left: 4px; bottom: 4px; padding: 1px 6px; font-size: 11px; }
 
 /* ---- looks: each look on a dozen photos, side by side */
 .looks-head { display: flex; align-items: center; flex-wrap: wrap; gap: 14px 18px; padding: 28px 0 8px; }

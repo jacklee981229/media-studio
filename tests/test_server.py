@@ -26,8 +26,9 @@ class Requests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         root = Path(tempfile.mkdtemp())
-        cls.saved = config.TRIPS, config.CACHE, config.MUSIC
+        cls.saved = config.TRIPS, config.CACHE, config.MUSIC, config.SITE, config.MEDIA
         config.TRIPS, config.CACHE, config.MUSIC = root / 'Trips', root / 'cache', root / 'music'
+        config.SITE, config.MEDIA = root / 'site', root / 'media'
         save_photo(config.TRIPS / 'Trip' / 'originals' / 'IMG_1.HEIC', picture(1), 'HEIF')
         (root / 'secret.txt').write_text('private')
         cls.studio = server.Studio()
@@ -39,7 +40,7 @@ class Requests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.httpd.shutdown()
-        config.TRIPS, config.CACHE, config.MUSIC = cls.saved
+        config.TRIPS, config.CACHE, config.MUSIC, config.SITE, config.MEDIA = cls.saved
 
     def call(self, path, body=None, host=None, kind='application/json'):
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', method='POST' if body is not None else 'GET',

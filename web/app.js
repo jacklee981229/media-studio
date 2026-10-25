@@ -15,7 +15,7 @@ const SAVE_FAILED = (error) => `没存上（${error.message}）。关掉 Media S
 const state = {
   trip: null, view: null, list: [], cards: [], at: 0, mode: 'photos', looks: null,
   filter: remembered('filter', 'all'), picks: remembered('picks', 'all'), subject: remembered('subject', 'all'),
-  lookFor: 'landscape', stacked: remembered('stacked', 'yes') === 'yes', details: remembered('details', 'no') === 'yes',
+  lookFor: 'landscape', storyTab: remembered('storyTab', 'pick'), stacked: remembered('stacked', 'yes') === 'yes', details: remembered('details', 'no') === 'yes',
 };
 
 function remembered(key, fallback) {
@@ -80,6 +80,7 @@ function alarm(message) {
 // ---- trips
 
 async function showTrips() {
+  stopListening();
   state.trip = null;
   state.view = null;
   state.mode = 'photos';
@@ -118,7 +119,7 @@ function adopt(view) {
 // While thumbnails are being made, keep asking; show each one as it lands, then lay the page out again.
 async function follow() {
   const trip = state.trip;
-  const busy = () => state.view.progress.running || state.view.export.running;
+  const busy = () => state.view.progress.running || state.view.export.running || state.view.publish.running;
   // An export alone doesn't change the photos, so the page isn't redrawn after it, only the sidebar's foot.
   const scanned = state.view.progress.running;
   while (state.trip === trip && busy()) {
@@ -175,14 +176,19 @@ function filters() {
   for (const item of inSource) bySubject[item.kind === 'video' ? 'video' : item.subject] += 1;
   const looks = state.view.looks;
   const looking = state.mode === 'looks';
+  const telling = state.mode === 'story';
+  const browsing = state.mode === 'photos';
+  const told = storyItems().filter((i) => i.story).length;
   fill(box,
-    !looking && group('来源', FILTERS.filter(([k]) => k !== 'screenshot' || bySource.screenshot), state.filter, bySource, (k) => { state.filter = k; remember('filter', k); render(); }),
-    !looking && group('选片', PICKS, state.picks, picked, (k) => { state.picks = k; remember('picks', k); render(); }),
-    !looking && group('类型', SUBJECTS, state.subject, bySubject, (k) => { state.subject = k; remember('subject', k); render(); }),
+    browsing && group('来源', FILTERS.filter(([k]) => k !== 'screenshot' || bySource.screenshot), state.filter, bySource, (k) => { state.filter = k; remember('filter', k); render(); }),
+    browsing && group('选片', PICKS, state.picks, picked, (k) => { state.picks = k; remember('picks', k); render(); }),
+    browsing && group('类型', SUBJECTS, state.subject, bySubject, (k) => { state.subject = k; remember('subject', k); render(); }),
     el('nav', { class: 'group', 'aria-label': '工具' }, el('h3', {}, '工具'),
-      el('button', { type: 'button', class: 'item', 'aria-pressed': String(looking), onclick: toggleLooks },
+      el('button', { type: 'button', class: 'item', 'aria-pressed': String(looking), onclick: () => toggleMode('looks') },
         el('span', {}, looking ? '‹ 回到照片' : '风格'), el('i', {}, `${looks.landscape || '原图'} · ${looks.portrait || '原图'}`)),
-      !looking && el('button', { type: 'button', class: 'item', 'aria-pressed': String(state.stacked),
+      el('button', { type: 'button', class: telling ? 'item' : 'item story-go', 'aria-pressed': String(telling), onclick: () => toggleMode('story') },
+        el('span', {}, telling ? '‹ 回到照片' : '故事'), el('i', {}, `${told} 个`)),
+      browsing && el('button', { type: 'button', class: 'item', 'aria-pressed': String(state.stacked),
         onclick: () => { state.stacked = !state.stacked; remember('stacked', state.stacked ? 'yes' : 'no'); render(); } },
         el('span', {}, '相似的叠在一起'), el('span', { class: 'switch' })),
       el('button', { type: 'button', class: 'item', onclick: () => begin('/api/refresh') },
@@ -198,10 +204,19 @@ function status() {
   const clips = items.filter((i) => i.pick === 'yes' && i.kind === 'video').length;
   if (progress.running) showProgress(progress.total ? '缩略图' : '正在读取文件', progress.done, progress.total);
   else if (out.running) showProgress('导出', out.done, out.total);
+  else if (state.view.publish.running) showProgress('发布', state.view.publish.done, state.view.publish.total);
   else finishProgress();
   const formats = el('div', { class: 'seg', role: 'radiogroup', 'aria-label': '导出格式' },
     ...Object.keys(FORMATS).map((key) => el('button', { type: 'button', role: 'radio', 'aria-checked': String(out.format === key),
       disabled: out.running, onclick: () => setFormat(key) }, FORMATS[key].name)));
+  if (state.mode === 'story') {
+    // Look first, then publish: the two sit together, in that order.
+    const told = storyItems().filter((i) => i.story).length;
+    fill(foot, el('button', { type: 'button', class: 'export', disabled: !told, onclick: openShow },
+      el('b', {}, '预览故事'), el('small', {}, told ? "大概看看在 Jack's Space 上的样子" : '先选几张照片')),
+      el('div', { class: 'publish', id: 'publish' }));
+    return publishNote();
+  }
   fill(foot,
     el('div', { class: 'format' }, formats, el('p', {}, FORMATS[out.format].says)),
     el('button', { type: 'button', class: 'export', disabled: !(kept || clips) || out.running,
@@ -265,8 +280,10 @@ async function begin(url) {
   follow();
 }
 
-function toggleLooks() {
-  state.mode = state.mode === 'looks' ? 'photos' : 'looks';
+// The looks page and the story page each take the main area; the same button goes back to the photos.
+function toggleMode(mode) {
+  stopListening();
+  state.mode = state.mode === mode ? 'photos' : mode;
   window.scrollTo({ top: 0, behavior: 'instant' });
   render();
 }
@@ -296,6 +313,7 @@ function cards() {
 function render() {
   side();
   if (state.mode === 'looks') { renderLooks(); return; }
+  if (state.mode === 'story') { renderStory(); return; }
   const focused = document.activeElement?.dataset?.first;
   const list = cards();
   const showing = $('loupe').open ? state.list[state.at] : null;
@@ -425,6 +443,7 @@ const KEYS = { KeyZ: 'yes', KeyX: 'no' };
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.altKey || e.metaKey || !state.view || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
   if ($('peek').open) return peekKeys(e);
+  if ($('story-show').open) return showKeys(e);
   const viewing = $('loupe').open;
   if (viewing && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.tagName !== 'VIDEO') {
     e.preventDefault();
@@ -469,6 +488,495 @@ $('main').addEventListener('keydown', (e) => {
   }
   if (to) { e.preventDefault(); to.focus(); to.scrollIntoView({ block: 'nearest' }); }
 });
+
+// ---- the story: first pick which kept photos tell the trip, in timeline order; then write under each one
+
+const STORY_TABS = [['pick', '选照片'], ['write', '写字']];
+// What can go into the story: the kept photos, and the kept videos that have a clip.
+const storyItems = () => state.view.items.filter((i) => i.pick === 'yes' && !i.error && (i.kind === 'photo' || i.clip));
+
+function renderStory() {
+  const kept = storyItems();
+  const chosen = kept.filter((i) => i.story);
+  const tabs = el('div', { class: 'seg', role: 'radiogroup', 'aria-label': '故事' },
+    ...STORY_TABS.map(([key, label]) => el('button', { type: 'button', role: 'radio', 'aria-checked': String(state.storyTab === key),
+      onclick: () => { state.storyTab = key; remember('storyTab', key); window.scrollTo({ top: 0, behavior: 'instant' }); renderStory(); } },
+      key === 'pick' ? `${label} · ${chosen.length}` : label)));
+  const head = el('div', { class: 'looks-head' }, el('h1', {}, '故事'), tabs, storySong());
+  if (state.storyTab === 'write') {
+    fill($('main'), head,
+      el('p', { class: 'looks-note' }, chosen.length ? `${chosen.length} 个，按拍摄时间排。对着照片和视频写下想说的话，会自动保存；不写也可以，文章里就只有照片或视频。` : '还没有照片或视频。先在「选照片」里点选。'),
+      el('div', { class: 'story-write' }, titleBox(), endBox('intro', '开头', chosen),
+        ...storyGroups(chosen).flatMap((members, k, all) => k < all.length - 1 ? [groupFor(members, k), noteSlot(members.at(-1))] : [groupFor(members, k)]),
+        endBox('outro', '结尾', chosen)));
+    publishNote();
+    return;
+  }
+  const days = new Map();
+  for (const item of kept) {
+    const key = item.day ?? 'none';
+    if (!days.has(key)) days.set(key, []);
+    days.get(key).push(item);
+  }
+  const labels = new Map(state.view.days.map((d) => [d.day, d.label]));
+  fill($('main'), head,
+    el('p', { class: 'looks-note' }, kept.length ? `按时间排出你要了的 ${kept.length} 个照片和视频（视频用你定的那一段）。点一下放进故事，再点一下拿出来；号码是它在文章里的顺序。` : '还没有要了的照片和视频。先回到照片，用 Z 标出要的。'),
+    ...[...days].map(([day, list]) => el('section', { class: 'day' },
+      el('div', { class: 'day-head' }, el('h2', {}, day === 'none' ? '没有拍摄时间' : labels.get(day) || day), el('span', {}, `${list.length} 张`)),
+      el('div', { class: 'rows' }, ...list.map(storyCard)))));
+  numberStory();
+}
+
+function storyCard(item) {
+  const ratio = item.width && item.height ? Math.min(3, Math.max(0.4, item.width / item.height)) : 1;
+  const img = el('img', { alt: '', loading: 'lazy', decoding: 'async', onload: (e) => e.target.classList.add('ready') });
+  if (item.thumb) img.src = q('/thumb', item.id);
+  return el('button', { type: 'button', class: `card story-card${item.story ? ' in' : ''}`, style: `flex-basis:${Math.round(ROW_HEIGHT * ratio)}px`,
+    'data-id': item.id, 'aria-pressed': String(item.story), 'aria-label': `${item.file}${item.when ? `，${clock(item.when)}` : ''}`,
+    onclick: () => chooseForStory(item) }, img, el('span', { class: 'chip order' }),
+    item.kind === 'video' && el('span', { class: 'chip length' }, length(item.clip.length)));
+}
+
+// The badges show each chosen photo's place in the story, so they are redrawn whenever one goes in or out.
+function numberStory() {
+  const chosen = storyItems().filter((i) => i.story);
+  for (const card of document.querySelectorAll('.story-card')) {
+    const at = chosen.findIndex((i) => i.id === card.dataset.id);
+    card.classList.toggle('in', at >= 0);
+    card.setAttribute('aria-pressed', String(at >= 0));
+    card.querySelector('.order').textContent = at >= 0 ? String(at + 1) : '';
+  }
+  const tab = document.querySelector('.looks-head [role=radio]');
+  if (tab) tab.textContent = `选照片 · ${chosen.length}`;
+  filters();
+  publishNote();
+}
+
+// The story's one song: a full song from the music folder's 完整版, played under the whole story on the site (its clips
+// are silent). It can be heard here first.
+let fullSongs = null;
+const listening = new Audio();
+listening.loop = true;
+
+// The preview's place in the song, on its bar and as "0:42 / 2:25".
+function showPlace() {
+  const seek = document.querySelector('.story-song .seek');
+  if (!seek) return;
+  const total = Number.isFinite(listening.duration) ? listening.duration : 0;
+  seek.max = String(Math.max(1, Math.floor(total)));
+  if (document.activeElement !== seek) seek.value = String(listening.currentTime);
+  document.querySelector('.story-song .place').textContent = total ? `${length(listening.currentTime)} / ${length(total)}` : '';
+}
+listening.addEventListener('timeupdate', showPlace);
+listening.addEventListener('loadedmetadata', showPlace);
+
+function stopListening() {
+  listening.pause();
+  document.querySelector('.story-song .listen')?.replaceChildren('▶ 试听');
+}
+
+function storySong() {
+  const box = el('div', { class: 'story-song' });
+  const draw = () => {
+    if (!fullSongs) {
+      fill(box, el('span', { class: 'note' }, '正在读取音乐…'));
+      return;
+    }
+    if (!fullSongs.songs.length) {
+      fill(box, el('span', { class: 'note' }, '完整版文件夹里还没有歌：', el('code', {}, fullSongs.folder)));
+      return;
+    }
+    const chosen = state.view.story_song;
+    const select = el('select', { 'aria-label': '整个故事的音乐', onchange: async (e) => {
+      const song = e.target.value || null;
+      const before = state.view.story_song;
+      state.view.story_song = song;
+      stopListening();
+      try {
+        await post('/api/story-song', { trip: state.trip, song });
+      } catch (error) {
+        state.view.story_song = before;
+        alarm(SAVE_FAILED(error));
+      }
+      draw();
+    } },
+      el('option', { value: '' }, '不要音乐'),
+      ...fullSongs.songs.map((s) => el('option', { value: s.name, selected: s.name === chosen },
+        `${s.title || s.name.replace(/\.[^.]+$/, '')}${s.artist ? ` · ${s.artist}` : ''}`)));
+    const src = chosen && `/music?full=1&name=${encodeURIComponent(chosen)}`;
+    const load = () => { if (src && !listening.src.endsWith(src)) listening.src = src; };
+    const listen = el('button', { type: 'button', class: 'pill-btn listen', disabled: !chosen, onclick: () => {
+      if (!listening.paused) return stopListening();
+      load();
+      listening.play().catch(() => {});
+      listen.replaceChildren('❚❚ 停');
+    } }, '▶ 试听');
+    // Where in the song: dragged to hear another part of it.
+    const seek = el('input', { type: 'range', class: 'seek', min: 0, max: 1, step: 0.5, value: 0, disabled: !chosen, 'aria-label': '试听到哪里' });
+    seek.addEventListener('input', () => { load(); listening.currentTime = Number(seek.value); showPlace(); });
+    fill(box, el('span', { class: 'note' }, '音乐'), select, listen, el('label', { class: 'slider' }, seek, el('output', { class: 'place' })));
+    if (src && listening.src.endsWith(src)) showPlace();
+  };
+  if (!fullSongs) get('/api/full-music').then((answer) => { fullSongs = answer; draw(); });
+  draw();
+  return box;
+}
+
+// The story page's way out to Jack's Space: the button, and what the last publish did.
+function publishNote() {
+  const box = $('publish');
+  if (!box) return;
+  const run = state.view.publish;
+  const chosen = storyItems().filter((i) => i.story).length;
+  // After a publish, the post opens in the site's local preview (its dev server, npm run dev in jacks-space).
+  fill(box, !run.running && run.error && el('span', { class: 'note bad' }, `没发布：${run.error}`),
+    el('button', { type: 'button', class: 'pill-btn keep', disabled: !chosen || run.running || state.view.export.running,
+      onclick: (e) => { e.currentTarget.disabled = true; begin('/api/publish'); } },
+      run.running ? '正在发布' : `发布到网站 · ${chosen} 个`),
+    !run.running && !run.error && run.address && el('a', { class: 'pill-btn', href: `http://localhost:4321/${run.address}/`, target: '_blank', rel: 'noopener' }, '在网站上看 ›'));
+}
+
+async function chooseForStory(item) {
+  item.story = !item.story;
+  numberStory();
+  try {
+    await post('/api/story', { trip: state.trip, id: item.id, chosen: item.story });
+  } catch (error) {
+    item.story = !item.story;
+    numberStory();
+    alarm(SAVE_FAILED(error));
+  }
+}
+
+// A clip in the story plays as it will on the site: just its own seconds, over and over, without sound here.
+function clipPreview(item) {
+  const { start, length: span } = item.clip;
+  const video = el('video', { src: q('/video', item.id), muted: true, playsinline: true, preload: 'metadata', controls: true });
+  video.addEventListener('loadedmetadata', () => { video.currentTime = start; });
+  video.addEventListener('timeupdate', () => { if (video.currentTime >= start + span || video.currentTime < start - 0.3) video.currentTime = start; });
+  return video;
+}
+
+// The chosen photos as the story's moments: a photo joined to the one before it goes into that one's group, which
+// shares one paragraph and shows its photos one after another on the site.
+function storyGroups(chosen) {
+  const groups = [];
+  for (const item of chosen) {
+    if (item.joined && groups.length) groups.at(-1).push(item);
+    else groups.push([item]);
+  }
+  return groups;
+}
+
+async function joinStory(item, joined) {
+  item.joined = joined;
+  renderStory();
+  try {
+    await post('/api/story', { trip: state.trip, id: item.id, joined });
+  } catch (error) {
+    item.joined = !joined;
+    renderStory();
+    alarm(SAVE_FAILED(error));
+  }
+}
+
+const storyMedia = (item) => (item.kind === 'video' ? clipPreview(item)
+  : el('img', { alt: '', loading: 'lazy', decoding: 'async', src: previewUrl(item), width: item.width, height: item.height }));
+
+// The post's title on Jack's Space; publishing writes it into the post.
+function titleBox() {
+  const note = el('span', { class: 'saved' }, '');
+  const input = el('input', { type: 'text', class: 'title-box', maxlength: '120', 'aria-label': '文章标题' });
+  input.value = state.view.story_title;
+  let timer = null;
+  let saved = state.view.story_title;
+  const save = async () => {
+    clearTimeout(timer);
+    const title = input.value.trim();
+    if (!title || title === saved) return;
+    note.replaceChildren('正在保存', dots());
+    try {
+      await post('/api/story-title', { trip: state.trip, title });
+      saved = state.view.story_title = title;
+      note.textContent = '已保存，发布后网站上的标题会跟着改';
+    } catch (error) {
+      note.textContent = '没存上';
+      alarm(SAVE_FAILED(error));
+    }
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(save, 700); });
+  input.addEventListener('change', save);
+  return el('section', { class: 'story-end' }, el('div', { class: 'moment-head' }, el('span', {}, '标题'), note), input);
+}
+
+// Between two moments: a button that opens a box for words on their own, which the site shows as a slide without a
+// photo, over the blur of the photo before it. The box stays until removed, even empty; only written words publish.
+function noteSlot(item) {
+  const slot = el('div', { class: 'note-slot' });
+  const send = (body) => post('/api/story', { trip: state.trip, id: item.id, ...body });
+  const draw = () => {
+    if (item.note == null) {
+      return fill(slot, el('button', { type: 'button', class: 'join', onclick: async () => {
+        item.note = '';
+        draw();
+        slot.querySelector('textarea').focus();
+        try { await send({ note: '' }); } catch (error) { item.note = null; draw(); alarm(SAVE_FAILED(error)); }
+      } }, '＋ 在这里加一段文字'));
+    }
+    const note = el('span', { class: 'saved' }, item.note ? '已保存' : '');
+    const box = el('textarea', { rows: '2', placeholder: '只有文字的一段（网站上单独一格，没有照片）', 'aria-label': `${item.file} 之后的一段文字` });
+    box.value = item.note;
+    let timer = null;
+    let saved = item.note;
+    const save = async () => {
+      clearTimeout(timer);
+      const words = item.note;
+      if (words === saved || item.note == null) return;
+      note.replaceChildren('正在保存', dots());
+      try {
+        await send({ note: words });
+        saved = words;
+        if (item.note === words) note.textContent = '已保存';
+      } catch (error) {
+        note.textContent = '没存上';
+        alarm(SAVE_FAILED(error));
+      }
+    };
+    box.addEventListener('input', () => { item.note = box.value; clearTimeout(timer); timer = setTimeout(save, 700); });
+    box.addEventListener('change', save);
+    const remove = el('button', { type: 'button', class: 'join', onclick: async () => {
+      clearTimeout(timer);
+      const before = item.note;
+      item.note = null;
+      draw();
+      try { await send({ remove_note: true }); } catch (error) { item.note = before; draw(); alarm(SAVE_FAILED(error)); }
+    } }, '删掉这段');
+    fill(slot, el('section', { class: 'story-end' }, el('div', { class: 'moment-head' }, el('span', {}, '只有文字的一段'), el('span', { class: 'saved' }, note, remove)), box));
+  };
+  draw();
+  return slot;
+}
+
+// ---- the story's preview: its slides roughly as Jack's Space shows them (src/components/TravelStory.astro there),
+// without the page around them: a scroll goes one slide on, the photo and words fading in on arrival.
+
+const SHOW = { slides: [], at: 0, held: 0 };
+
+function showSlides() {
+  const chosen = storyItems().filter((i) => i.story);
+  const v = state.view;
+  const pickOr = (id, fallback) => chosen.find((i) => i.id === id) ?? fallback;
+  const slides = [];
+  if (v.story_intro.trim()) slides.push({ back: pickOr(v.story_intro_photo, chosen[0]), words: v.story_intro, key: 'intro' });
+  storyGroups(chosen).forEach((members, g) => {
+    members.forEach((m, j) => slides.push({ photo: m, glow: m, head: members[0], last: members.at(-1), key: `g${g}`, place: members.length > 1 ? `${j + 1} / ${members.length}` : '' }));
+    const between = members.map((m) => m.note ?? '').filter((words) => words.trim()).join('\n');
+    if (between) slides.push({ glow: members.at(-1), words: between, key: `n${g}` });
+  });
+  if (v.story_outro.trim()) slides.push({ back: pickOr(v.story_outro_photo, chosen.at(-1)), words: v.story_outro, key: 'outro' });
+  return slides;
+}
+
+function openShow() {
+  stopListening();
+  SHOW.slides = showSlides();
+  if (!SHOW.slides.length) return;
+  const screen = $('show-screen');
+  const paras = (text) => text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => el('p', {}, l));
+  const items = [...new Set(SHOW.slides.flatMap((s) => [s.photo, s.glow, s.back]).filter(Boolean))];
+  const words = new Map();
+  for (const s of SHOW.slides) {
+    if (words.has(s.key)) continue;
+    if (s.head) {
+      const when = s.head.when ? clock(s.head.when) + (s.last !== s.head && s.last.when ? ` – ${clock(s.last.when).split(' ')[1]}` : '') : '';
+      words.set(s.key, el('div', { class: 'show-words', 'data-key': s.key },
+        (s.head.place || when) && el('div', { class: 'show-head' }, s.head.place && el('b', {}, el('span', { class: 'pin', 'aria-hidden': 'true' }), s.head.place), when && el('span', {}, when)),
+        ...paras(s.head.words)));
+    } else words.set(s.key, el('div', { class: 'show-words end', 'data-key': s.key }, ...paras(s.words)));
+  }
+  fill(screen,
+    ...items.map((item) => el('img', { class: 'show-glow', alt: '', 'data-id': item.id, 'data-src': item.thumb ? q('/thumb', item.id) : '' })),
+    ...items.map((item) => el('img', { class: 'show-back', alt: '', 'data-id': item.id, 'data-src': previewUrl(item) })),
+    ...items.map((item) => {
+      if (item.kind !== 'video') return el('img', { class: 'show-photo', alt: '', 'data-id': item.id, 'data-src': previewUrl(item) });
+      const video = clipPreview(item);
+      video.controls = false;
+      video.classList.add('show-photo');
+      video.dataset.id = item.id;
+      return video;
+    }),
+    ...words.values());
+  SHOW.at = -1;
+  $('story-show').showModal();
+  $('story-show').focus();
+  showAt(0);
+}
+
+function showAt(k) {
+  k = Math.max(0, Math.min(SHOW.slides.length - 1, k));
+  if (k === SHOW.at) return;
+  SHOW.at = k;
+  const s = SHOW.slides[k];
+  const screen = $('show-screen');
+  // Pictures load a slide or two ahead.
+  const near = SHOW.slides.slice(Math.max(0, k - 1), k + 3).flatMap((n) => [n.photo, n.glow, n.back]).filter(Boolean).map((i) => i.id);
+  for (const img of screen.querySelectorAll('img[data-src]')) if (near.includes(img.dataset.id) && !img.getAttribute('src')) img.src = img.dataset.src;
+  const on = (cls, item) => screen.querySelectorAll(cls).forEach((x) => x.classList.toggle('on', !!item && x.dataset.id === item.id));
+  on('.show-glow', s.glow);
+  on('.show-back', s.back);
+  on('.show-photo', s.photo);
+  screen.querySelectorAll('video.show-photo').forEach((v) => (v.classList.contains('on') ? v.play().catch(() => {}) : v.pause()));
+  screen.querySelectorAll('.show-words').forEach((w) => w.classList.toggle('on', w.dataset.key === s.key));
+  $('show-count').textContent = `${k + 1} / ${SHOW.slides.length}${s.place ? ` · 这组第 ${s.place}` : ''}`;
+}
+
+// One wheel turn or touchpad swipe is one slide: more turns are held back while a slide lands.
+function showStep(way) {
+  if (performance.now() < SHOW.held) return;
+  SHOW.held = performance.now() + 500;
+  showAt(SHOW.at + way);
+}
+$('story-show').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (performance.now() < SHOW.held) { SHOW.held = Math.max(SHOW.held, performance.now() + 200); return; }
+  if (Math.abs(e.deltaY) >= 4) showStep(Math.sign(e.deltaY));
+}, { passive: false });
+function showKeys(e) {
+  const way = { ArrowDown: 1, PageDown: 1, ' ': 1, ArrowRight: 1, ArrowUp: -1, PageUp: -1, ArrowLeft: -1 }[e.key];
+  if (way) { e.preventDefault(); showStep(way); }
+  if (e.key === 'Home') { e.preventDefault(); showAt(0); }
+  if (e.key === 'End') { e.preventDefault(); showAt(SHOW.slides.length - 1); }
+}
+$('show-close').addEventListener('click', () => $('story-show').close());
+$('story-show').addEventListener('close', () => {
+  $('show-screen').querySelectorAll('video').forEach((v) => v.pause());
+  fill($('show-screen'));
+});
+
+// The story's opening or closing words, apart from any photo: left empty, the story starts or ends with a photo.
+// Under them, the photo the site dims behind them: the first (or last) unless Jack picks another.
+function endBox(which, label, chosen) {
+  const key = `story_${which}`;
+  const note = el('span', { class: 'saved' }, state.view[key] ? '已保存' : '');
+  const box = el('textarea', { rows: '2', placeholder: `${label}的话（可以留白）`, 'aria-label': `故事的${label}` });
+  box.value = state.view[key];
+  let timer = null;
+  let saved = state.view[key];
+  const save = async () => {
+    clearTimeout(timer);
+    const words = state.view[key];
+    if (words === saved) return;
+    note.replaceChildren('正在保存', dots());
+    try {
+      await post('/api/story-text', { trip: state.trip, which, words });
+      saved = words;
+      if (state.view[key] === words) note.textContent = '已保存';
+    } catch (error) {
+      note.textContent = '没存上';
+      alarm(SAVE_FAILED(error));
+    }
+  };
+  box.addEventListener('input', () => { state.view[key] = box.value; clearTimeout(timer); timer = setTimeout(save, 700); });
+  box.addEventListener('change', save);
+  return el('section', { class: 'story-end' }, el('div', { class: 'moment-head' }, el('span', {}, label), note), box, backPicker(which, label, chosen));
+}
+
+function backPicker(which, label, chosen) {
+  const key = `story_${which}_photo`;
+  const fallback = which === 'intro' ? chosen[0] : chosen.at(-1);
+  const strip = el('div', { class: 'backs', role: 'radiogroup', 'aria-label': `${label}背后的照片` });
+  const draw = () => {
+    const picked = chosen.find((i) => i.id === state.view[key]) ?? fallback;
+    fill(strip, ...chosen.map((item) => el('button', { type: 'button', role: 'radio', 'aria-checked': String(item === picked),
+      'aria-label': item === fallback ? `${item.file}（默认）` : item.file, onclick: () => pick(item) },
+      el('img', { alt: '', loading: 'lazy', decoding: 'async', src: item.thumb ? q('/thumb', item.id) : '' }),
+      item === fallback && el('span', { class: 'chip' }, '默认'))));
+  };
+  const pick = async (item) => {
+    const before = state.view[key];
+    state.view[key] = item === fallback ? null : item.id;
+    draw();
+    try {
+      await post('/api/story-back', { trip: state.trip, which, id: state.view[key] });
+    } catch (error) {
+      state.view[key] = before;
+      draw();
+      alarm(SAVE_FAILED(error));
+    }
+  };
+  if (!chosen.length) return null;
+  draw();
+  return el('div', { class: 'backs-row' }, el('span', { class: 'note' }, '背景照片（网站上调暗铺满，字在上面）'), strip);
+}
+
+// One moment as the article will show it: its photo (or its group's photos, each of the later ones with a way out of
+// the group), then a box for the words. From the second moment on, a button above it joins it to the one before.
+function groupFor(members, k) {
+  const [first] = members;
+  const last = members.at(-1);
+  const when = first.when ? clock(first.when) + (members.length > 1 && last.when && last.when !== first.when ? ` – ${clock(last.when).split(' ')[1]}` : '') : '没有拍摄时间';
+  const moment = momentFor(first, members.length > 1
+    ? el('div', { class: 'moment-photos' }, ...members.map((m, j) => el('div', { class: 'member' }, storyMedia(m),
+      j > 0 && el('button', { type: 'button', class: 'pill-btn apart', onclick: () => joinStory(m, false) }, '拆开'))))
+    : storyMedia(first), `${when}${members.length > 1 ? ` · ${members.length} 张一组` : ''}`);
+  if (k === 0) return moment;
+  return el('div', { class: 'moment-wrap' },
+    el('button', { type: 'button', class: 'join', title: '和上面那段共用一段文字，在网站上一张接一张轮播', onclick: () => joinStory(first, true) }, '↑ 跟上一张合成一组'),
+    moment);
+}
+
+function momentFor(item, media, label) {
+  const note = el('span', { class: 'saved' }, item.words ? '已保存' : '');
+  const box = el('textarea', { rows: '3', placeholder: '这张照片的故事……', 'aria-label': `${item.file} 的文字` });
+  box.value = item.words;
+  // The file object holds the words as typed, so the page drawn again (another tab and back) shows them even before
+  // they are saved; `saved` is what the server has.
+  item.saved ??= item.words;
+  let timer = null;
+  const save = async () => {
+    clearTimeout(timer);
+    const words = item.words;
+    if (words === item.saved) return;
+    note.replaceChildren('正在保存', dots());
+    try {
+      await post('/api/story', { trip: state.trip, id: item.id, words });
+      item.saved = words;
+      if (item.words === words) note.textContent = '已保存';
+    } catch (error) {
+      note.textContent = '没存上';
+      alarm(SAVE_FAILED(error));
+    }
+  };
+  box.addEventListener('input', () => { item.words = box.value; clearTimeout(timer); timer = setTimeout(save, 700); });
+  // Leaving the box saves at once, so nothing waits on the timer when the page changes.
+  box.addEventListener('change', save);
+  return el('article', { class: 'moment' }, media, el('div', { class: 'moment-head' }, el('span', {}, label), note), placeBox(item, note), box);
+}
+
+// Where the moment was, shown over its words on the site with a pin; a group's is its first photo's.
+function placeBox(item, note) {
+  const input = el('input', { type: 'text', maxlength: '40', placeholder: '地点（可不填），比如 理想邦', 'aria-label': `${item.file} 的地点` });
+  input.value = item.place;
+  item.savedPlace ??= item.place;
+  let timer = null;
+  const save = async () => {
+    clearTimeout(timer);
+    const place = item.place;
+    if (place === item.savedPlace) return;
+    note.replaceChildren('正在保存', dots());
+    try {
+      await post('/api/story', { trip: state.trip, id: item.id, place });
+      item.savedPlace = place;
+      if (item.place === place) note.textContent = '已保存';
+    } catch (error) {
+      note.textContent = '没存上';
+      alarm(SAVE_FAILED(error));
+    }
+  };
+  input.addEventListener('input', () => { item.place = input.value; clearTimeout(timer); timer = setTimeout(save, 700); });
+  input.addEventListener('change', save);
+  return el('label', { class: 'place-box' }, el('span', { class: 'pin', 'aria-hidden': 'true' }), input);
+}
 
 // ---- looks: each look on a dozen of the trip's photos, side by side; landscapes and portraits each get one
 
@@ -723,10 +1231,10 @@ let songs = null;
 const clipState = { looping: false };
 const seconds = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 
-// The video plays whole until a clip is chosen or asked for; then it loops just the clip, with its sound, so what
-// plays is what will be exported.
+// The video plays whole, silent, until its clip has been given a start or a sound (or is asked for); then it loops just
+// the clip with that sound, so what plays is what will be exported.
 function clipPlayer(item, video) {
-  clipState.looping = item.clip.chosen;
+  clipState.looping = item.clip.chosen || item.clip.sound !== 'mute';
   video.addEventListener('loadedmetadata', () => { if (clipState.looping) playClip(item); }, { once: true });
   video.addEventListener('timeupdate', () => {
     if (clipState.looping && video.currentTime >= item.clip.start + item.clip.length) playClip(item);
@@ -783,21 +1291,21 @@ function setClipStart(item) {
 
 // The clip's own controls in the bar: where it starts, playing it, and its sound.
 function clipControls(item) {
-  const { start, length: span, sound, music, music_start: from } = item.clip;
+  const { start, length: span, sound, music } = item.clip;
   const sounds = el('div', { class: 'seg', role: 'radiogroup', 'aria-label': '声音' },
     ...[['mute', '静音'], ['original', '原声'], ['music', '音乐']].map(([key, label]) =>
       el('button', { type: 'button', role: 'radio', 'aria-checked': String(sound === key), onclick: () => saveClip(item, { sound: key }) }, label)));
   return [
-    el('span', { class: 'note' }, `${seconds(start)} – ${seconds(start + span)}${item.clip.chosen ? '' : '（中间）'}`),
-    el('button', { type: 'button', class: 'pill-btn', onclick: () => setClipStart(item) }, '从这里开始 S'),
+    el('span', { class: 'note' }, `片段 ${seconds(start)} – ${seconds(start + span)}${item.clip.chosen ? '' : '（还没选，先用中间）'}`),
+    el('button', { type: 'button', class: 'pill-btn', onclick: () => setClipStart(item) }, '从当前画面开始 S'),
     el('button', { type: 'button', class: 'pill-btn', onclick: () => playClip(item) }, '播放这一段'),
     el('span', { class: 'sep' }),
     sounds,
-    ...(sound === 'music' ? songPicker(item, music, from, span) : []),
+    ...(sound === 'music' ? songPicker(item, music) : []),
   ];
 }
 
-function songPicker(item, music, from, span) {
+function songPicker(item, music) {
   if (!songs) {
     get('/api/music').then((answer) => { songs = answer; if (state.list[state.at] === item) info(item); });
     return [el('span', { class: 'note' }, '正在读取音乐…')];
@@ -806,18 +1314,18 @@ function songPicker(item, music, from, span) {
     return [el('span', { class: 'note' }, '音乐文件夹里还没有歌：', el('code', {}, songs.folder)),
       el('button', { type: 'button', class: 'pill-btn', onclick: () => { songs = null; info(item); } }, '重新读取')];
   }
-  const select = el('select', { 'aria-label': '选一首歌', onchange: (e) => saveClip(item, { music: e.target.value || null, music_start: 0 }) },
+  const pick = (name) => saveClip(item, { music: name || null, music_start: 0 });
+  const select = el('select', { 'aria-label': '选一首歌', onchange: (e) => pick(e.target.value) },
     el('option', { value: '' }, '选一首歌…'),
-    ...songs.songs.map((name) => el('option', { value: name, selected: name === music }, name)));
-  if (!music) return [select];
-  // Where in the song the clip begins: dragged like the song strip in a story.
-  const audio = $('clip-audio');
-  const top = Math.max(0, (audio?.duration || 240) - span);
-  const out = el('output', {}, seconds(from));
-  const input = el('input', { type: 'range', min: 0, max: top, step: 0.5, value: Math.min(from, top), 'aria-label': '从歌的哪里开始' });
-  input.addEventListener('input', () => { out.textContent = seconds(Number(input.value)); });
-  input.addEventListener('change', () => { input.blur(); saveClip(item, { music_start: Number(input.value) }); });
-  return [select, el('label', { class: 'slider' }, el('span', {}, '从'), input, out)];
+    // The list shows names without the file type.
+    ...songs.songs.map((name) => el('option', { value: name, selected: name === music }, name.replace(/\.[^.]+$/, ''))));
+  // ‹ › step through the songs one by one, round the end, so trying each under the clip is one press.
+  const at = songs.songs.indexOf(music);
+  const step = (by) => pick(songs.songs[(at + by + songs.songs.length) % songs.songs.length]);
+  const near = [el('button', { type: 'button', class: 'pill-btn', 'aria-label': '上一首', onclick: () => step(at < 0 ? 0 : -1) }, '‹'), select,
+    el('button', { type: 'button', class: 'pill-btn', 'aria-label': '下一首', onclick: () => step(1) }, '›')];
+  // The songs are 8 s pieces, cut to fit a 7 s clip, so the music always starts at its beginning.
+  return near;
 }
 
 // Everything the viewer shows about the file on screen: the line at the top, the verdict, the bar, the stack strip
@@ -861,7 +1369,7 @@ function info(item) {
       el('h4', {}, '文件'),
       el('dl', {}, ...facts.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])),
       el('p', { class: 'keys' }, 'Z 要 · X 不要（再按一次取消）', el('br'),
-        members.length > 1 ? 'Shift+Z 只要这张 · ' : '', item.kind === 'photo' ? 'T 人像/风景 · 按住 O 看原图' : 'S 从这里开始', el('br'),
+        members.length > 1 ? 'Shift+Z 只要这张 · ' : '', item.kind === 'photo' ? 'T 人像/风景 · 按住 O 看原图' : 'S 从当前画面开始', el('br'),
         '← → 翻看 · I 这个面板 · Esc 关闭'));
   }
 }
