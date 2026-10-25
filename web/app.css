@@ -285,6 +285,7 @@ button.glass:hover { background: rgba(44, 47, 53, 0.85); }
 .show-head b { display: inline-flex; align-items: center; gap: 6px; color: #e8edf3; }
 .show-head .pin { background: currentColor; }
 .show-count { position: absolute; left: 24px; bottom: 16px; z-index: 3; color: #9aa8b8; font-size: 13px; font-weight: 600; }
+.show-seek { position: absolute; left: 50%; bottom: 14px; z-index: 3; width: min(640px, 50vw); translate: -50% 0; accent-color: #e8edf3; cursor: pointer; }
 .show-keys { position: absolute; right: 24px; bottom: 16px; z-index: 3; margin: 0; color: #9aa8b8; font-size: 13px; }
 .story-show .corner { position: absolute; top: 16px; right: 16px; z-index: 3; }
 /* The place over the words: a slim field with a pin, set apart from the words box below it. */

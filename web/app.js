@@ -807,6 +807,7 @@ function openShow() {
     }),
     ...words.values());
   SHOW.at = -1;
+  $('show-seek').max = String(SHOW.slides.length);
   $('story-show').showModal();
   $('story-show').focus();
   showAt(0);
@@ -828,6 +829,7 @@ function showAt(k) {
   screen.querySelectorAll('video.show-photo').forEach((v) => (v.classList.contains('on') ? v.play().catch(() => {}) : v.pause()));
   screen.querySelectorAll('.show-words').forEach((w) => w.classList.toggle('on', w.dataset.key === s.key));
   $('show-count').textContent = `${k + 1} / ${SHOW.slides.length}${s.place ? ` · 这组第 ${s.place}` : ''}`;
+  $('show-seek').value = String(k + 1);
 }
 
 // One wheel turn or touchpad swipe is one slide: more turns are held back while a slide lands.
@@ -848,6 +850,8 @@ function showKeys(e) {
   if (e.key === 'End') { e.preventDefault(); showAt(SHOW.slides.length - 1); }
 }
 $('show-close').addEventListener('click', () => $('story-show').close());
+// Dragging the bar goes straight to any slide.
+$('show-seek').addEventListener('input', (e) => showAt(Number(e.target.value) - 1));
 $('story-show').addEventListener('close', () => {
   $('show-screen').querySelectorAll('video').forEach((v) => v.pause());
   fill($('show-screen'));
